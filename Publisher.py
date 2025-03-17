@@ -18,6 +18,7 @@ import os
 import re
 import glob
 import yaml
+import json
 import markdown
 from jinja2 import Environment, FileSystemLoader, Template, DebugUndefined
 
@@ -42,12 +43,15 @@ class Dataset:
         self.m_list.append(copy.deepcopy(entry))
 
     def archive_attribute(self, key, value):
-        try:
-            assert(key is not "__type__"), f"Error: __type__ is a reserved keyword for this class."
-            self.m_dict[key] = copy.deepcopy(value)
-        except AssertionError as msg:
-            print(msg)
-            raise
+        self.m_dict[key] = copy.deepcopy(value)
+
+    def unpack_and_archive(self, other):
+        # unpack the attributes from other into this dataset
+        self.m_dict = {**self.m_dict, **other.attributes()}
+
+        # unpack the entries from other into this dataset
+        for e in other.entries():
+            self.archive_entry(e)
 
     def get(self, idx):
         try:
@@ -96,7 +100,6 @@ class Dataset:
 class ParallelSet(Dataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.m_dict["__type__"] = type(self).__name__
 
 
 # A SerialSet is typically a time-ordered set of entries.
@@ -122,7 +125,6 @@ class ParallelSet(Dataset):
 class SerialSet(Dataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.m_dict["__type__"] = type(self).__name__
 
 
 # Define content classes for each type
@@ -236,6 +238,7 @@ class Yaml(Dataset):
         data["context"] = kwargs["context"]
         data["class"] = type(self).__name__
         data["attributes"] = self.m_dict
+        data["attributes"].pop("location", None) # we do not need to output the Yaml location object
         data["entries"] = [e for e in self.entries()]
         return data
 
@@ -766,15 +769,25 @@ class MarkDownFile:
                 # create content object from reader state
                 xobj = _state.construct_content_object(location=self.location)
 
-                # store content object in temporary SerialSet
-                _serial_set.archive_entry(xobj)
+                if type(xobj).__name__ == Yaml.__name__:
+                    # If xobj stores raw yaml, store that in the temp serial set attributes
+                    #
+                    # NOTE: if xobj is raw yaml, it is meaningless for it to have an unlabeled list
+                    #       so any such data will be discarded.
+                    for k,v in xobj.attributes().items():
+                        # omit archiving the location, we already have this information elsewhere
+                        if k != "location":
+                            _serial_set.archive_attribute(k,v)
+                else:
+                    # otherwise store xobj content in the temp serial set entries
+                    _serial_set.archive_entry(xobj)
 
             # if we need to finish serial content accumulation, then
             # check if ParallelSet exists and store temporary SerialSet
             if finish_serial:
                 if _serial_set.has_content():
                     if _parallel_set is None:
-                        self.content.archive_entry(_serial_set)
+                        self.content.unpack_and_archive(_serial_set)
                     else:
                         _parallel_set.archive_entry(_serial_set)
 
@@ -847,7 +860,7 @@ class MarkDownFile:
                             if at_heading:
                                 if tmp_parallel_set is None:
                                     tmp_parallel_set = ParallelSet()
-                                heading_text = lowercase_nospaces.lstrip(r"#")
+                                heading_text = line.strip().lstrip(r"#")
                                 tmp_serial_set.archive_attribute("name", heading_text)
                             elif at_dashes:
                                 if tmp_parallel_set.has_content():
@@ -985,6 +998,12 @@ class Sequence:
 
         dictout = {"author": self.author, "title": self.title}
         dictout["sequence"] = [s.render_dict(**kwargs) for s in self.sequence]
+
+        with open("render_sequence.json", "w") as file:
+            for idx, scene in enumerate(dictout["sequence"]):
+                file.write(f"// Writing Scene {idx}:\n\n")
+                file.write(json.dumps(scene, indent=4))
+                file.write(f"\n\n\n")
 
         return dictout
 
