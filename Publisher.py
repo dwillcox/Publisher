@@ -3,7 +3,8 @@
 
 """
 The Publisher code is a collection of Python classes to make
-publishing markdown content easy using YAML-defined structure.
+publishing markdown content easy using a combination of
+GitHub-Flavored Markdown and YAML-defined objects.
 
 Currently it supports a webpage output, but it would be easy to
 generate LaTeX documents, Beamer slides, etc.
@@ -11,7 +12,9 @@ generate LaTeX documents, Beamer slides, etc.
 D. Willcox
 """
 
+import inspect
 import os
+import re
 import glob
 import yaml
 import markdown
@@ -81,6 +84,7 @@ class Location:
                 assert(os.path.isfile(self.abspath)), f"Error: no file found at path {path}"
             except AssertionError as msg:
                 print(msg)
+                raise
 
             # save the (absolute) directory path containing this location
             self.directory = os.path.dirname(self.abspath)
@@ -101,13 +105,14 @@ class Location:
             assert(os.path.isfile(abspath)), f"Error: no file found at path {abspath} from relative path {path}."
         except AssertionError as msg:
             print(msg)
+            raise
 
         # create a Location object and return it
         return Location(abspath)
 
 
 class Text:
-    def __init__(self, content_string, location):
+    def __init__(self, content_string, location=Location()):
         """
         This class contains a block of plain text.
 
@@ -120,12 +125,14 @@ class Text:
             self.raw_string = content_string
         except AssertionError as msg:
             print(msg)
+            raise
 
         try:
             assert isinstance(location, Location), f"Error: {location} is not of expected type: Location"
             self.location = location
         except AssertionError as msg:
             print(msg)
+            raise
 
     def as_html(self):
         # Preprocess Markdown before converting to HTML
@@ -151,7 +158,7 @@ class Text:
         This is useful for rendering using Jinja2.
         """
 
-        dictout = {"type": "text"}
+        dictout = {"type": "Text"}
 
         try:
             if (not target) or (target == "markdown"):
@@ -162,12 +169,13 @@ class Text:
                 assert(not target), f"Error: unrecognized target {target}"
         except AssertionError as msg:
             print(msg)
+            raise
 
         return dictout
 
 
 class Figure:
-    def __init__(self, content_string, location):
+    def __init__(self, source="", title="", caption="", location=Location()):
         """
         This class contains a YAML-defined figure.
 
@@ -176,20 +184,22 @@ class Figure:
         - location: the Location object storing this figure's YAML specification
         """
         try:
-            assert isinstance(content_string, str), f"Error: {content_string} is not of expected type: str"
-            self.raw_string = content_string
-        except AssertionError as msg:
-            print(msg)
+            assert isinstance(source, str), f"Error: Figure source {source} is not of expected type: str"
+            assert source != "", f"Error: Figure requires a source path to an image file but got: {source}"
+            self.source = source
 
-        try:
-            assert isinstance(location, Location), f"Error: {location} is not of expected type: Location"
+            assert isinstance(title, str), f"Error: Figure title {title} is not of expected type: str"
+            self.title = title
+
+            assert isinstance(caption, str), f"Error: Figure caption {caption} is not of expected type: str"
+            self.caption = caption
+
+            assert isinstance(location, Location), f"Error: Figure declaration location {location} is not of expected type: Location"
             self.location = location
         except AssertionError as msg:
             print(msg)
-        
-        # convert figure specification to YAML-structured dictionary
-        self.yaml = yaml.safe_load(self.raw_string)
-        
+            raise
+
         # locate relative and absolute paths to source image
         self.locate_source()
 
@@ -199,9 +209,9 @@ class Figure:
         relative to the figure specification file is replaced
         by its path relative to the current directory.
         """
-        source_location = self.location.locate_relpath(self.yaml["source"])
-        self.yaml["source_relpath"] = source_location.relpath
-        self.yaml["source_abspath"] = source_location.abspath
+        source_location = self.location.locate_relpath(self.source)
+        self.relpath = source_location.relpath
+        self.abspath = source_location.abspath
 
     def render_dict(self, target=None):
         """
@@ -210,13 +220,209 @@ class Figure:
         This is useful for rendering using Jinja2.
         """
 
-        dictout = {"type": "figure",
-                   "content": self.yaml}
+        dictout = {"type": "Figure",
+                   "source": self.source,
+                   "relpath": self.relpath,
+                   "abspath": self.abspath,
+                   "title": self.title,
+                   "caption": self.caption}
 
         return dictout
 
 
-# Define a class for storing the content associated with a single Scene
+# This is a factory class for constructing
+# content objects from YAML-formatted specifications.
+class ContentFactory:
+    def __init__(self, *args):
+        # Interpret positional argument list as the
+        # list of classes we can construct
+        self.classes = args
+
+        # Check that all content classes can be constructed
+        for i, cls in enumerate(self.classes):
+            try:
+                assert(inspect.isclass(cls)), f"Error: received invalid class for positional argument with index {i}"
+            except AssertionError as msg:
+                print(msg)
+                raise
+        
+    ## Define a helper function to get the list of
+    ## keyword arguments supported by a class
+    def get_supported_keywords(self, a_class):
+        supported_keywords = []
+        supported_arguments = inspect.signature(a_class.__init__).parameters.values()
+        for a_arg in supported_arguments:
+            if a_arg.kind == a_arg.POSITIONAL_OR_KEYWORD or a_arg.kind == a_arg.KEYWORD_ONLY:
+                supported_keywords.append(a_arg.name)
+        return supported_keywords
+
+    def construct(self, cls, *args, **kwargs):
+        # Check if the requested class is permitted for this factory
+        try:
+            assert(cls in self.classes), f"Error: cannot construct a class for which this factory was not configured. Factory supports these classes: {c.__name__ for c in self.classes}"
+        except AssertionError as msg:
+            print(msg)
+            raise
+        
+        # Verbose: print the class and arguments we are about to use
+        print("In ContentFactory.construct(), we are attempting the following:")
+        print(f"  class: {cls.__name__}")
+        print(f"  args:")
+        for a in args:
+            print(f"       {a}")
+        print(f"  kwargs:")
+        for k,v in kwargs.items():
+            print(f"       {k}: {v}")
+        
+        # Construct class with the given arguments
+        xobj = cls(*args, **kwargs)
+        
+        ## Return the newly-constructed object to the caller
+        return xobj
+
+
+# Define classes for reading and storing the content associated with a single Scene
+#
+# We have to be a little fancy because the text content combines traditional
+# GitHub-flavored Markdown with YAML-specified content classes to denote figures, etc.
+
+# Current state of the content reader
+class ReaderState:
+    def __init__(self):
+        # state variables
+        #
+        # m_reading_yaml: True if we are "reading YAML"
+        #                 False otherwise
+        #
+        # m_content: A single string storing reader content.
+        #
+        # m_class_label: The label for the class of our content.
+        #
+        # m_class_map: The mappings between each class label and the Class.
+        #
+        # m_class_factory: The ContentFactory we use to construct objects.
+        self.m_declaration = None
+        self.m_content = None
+        self.m_class_label = None
+        self.m_class_map = None
+        self.m_class_factory = None
+        
+        # initialize state
+        self.reset()
+
+    def reset(self):
+        # Re-initialize the class
+        self.set_not_declaration()
+        self.clear_content()
+        self.define_classes()
+
+    def set_not_declaration(self):
+        # set the "reading a declaration" state to False
+        self.m_declaration = False
+        
+    def set_declaration(self):
+        # set the "reading a declaration" state to True
+        self.m_declaration = True
+        
+    def is_declaration(self):
+        # return True if we are "reading a declaration",
+        # otherwise return False.
+        return self.m_declaration
+    
+    def set_class_label(self, class_label):
+        # raise an error if we do not recognize the label
+        # otherwise set the class label for our reader content
+        try:
+            assert(class_label in self.m_class_map.keys()), f"Error: cannot identify unknown content class: {class_label}"
+            self.m_class_label = class_label
+        except AssertionError as msg:
+            print(msg)
+            raise
+        
+    def clear_content(self):
+        # clears stored content
+        self.m_content = ""
+        self.m_class_label = Text.__name__
+        
+    def define_classes(self):
+        # Types of content blocks we recognize
+        # and their mappings to class constructors
+        self.m_class_map = {Text.__name__: Text,
+                            Figure.__name__: Figure}
+
+        self.m_class_factory = ContentFactory(*[cls for _,cls in self.m_class_map.items()])
+
+    def store_content(self, new_content):
+        # stores new content
+        self.m_content += new_content
+        
+    def content(self):
+        # returns reader content
+        return self.m_content
+        
+    def is_empty(self):
+        # check if content is null,
+        # i.e. equivalent to the empty string or None
+        empty_string = ""
+        none_type = None
+        null_similarity = lambda a,b: (a is b) or (bool(a) is bool(b)) or (a==b)
+        return null_similarity(self.m_content, empty_string) or null_similarity(self.m_content, none_type)
+    
+    def has_content(self):
+        # return True if we have content, False otherwise
+        return not self.is_empty()
+
+    def construct_content_object(self, **kwargs):
+        # call the class constructor for our reader content and
+        # return the resulting object while
+        # passing through any keyword arguments that
+        # the constructor needs
+        try:
+            assert(self.m_class_label in self.m_class_map.keys()), f"Error: cannot construct unknown content class: {self.m_class_label}"
+
+            # make a data structure for the positional and keyword
+            # arguments our class requires
+            cls_args = {"args": [], "kwargs": {}}
+
+            if self.m_class_label == Text.__name__:
+                # form the arguments expected by the Text.__init__ constructor
+                cls_args["args"] = [self.m_content]
+                cls_args["kwargs"] = kwargs
+            else:
+                # convert yaml-specified arguments into positional and
+                # keyword arguments for class construction
+                yaml_args = yaml.safe_load(self.m_content)
+
+                print(f"yaml_args: {yaml_args}")
+
+                # allow user to specify an args list explicitly
+                if "args" in yaml_args.keys():
+                    cls_args["args"] = yaml_args["args"][:]
+
+                # allow user to specify a kwargs dict explicitly
+                if "kwargs" in yaml_args.keys():
+                    for k,v in yaml_args["kwargs"].items():
+                        cls_args["kwargs"][k] = v
+
+                # allow user to specify keywords (k) and values (v) as "k: v" entries
+                for k,v in yaml_args.items():
+                    # we've already accounted for explicit args and kwargs entries
+                    # so we interpret all other entries as "key: value" keyword arguments
+                    if k != "args" and k != "kwargs":
+                        cls_args["kwargs"][k] = v
+                        
+                # finally, add the kwargs from this function caller
+                cls_args["kwargs"] = {**cls_args["kwargs"], **kwargs}
+                
+            print(f"cls_args: {cls_args}")
+            content_object = self.m_class_factory.construct(self.m_class_map[self.m_class_label], *cls_args["args"], **cls_args["kwargs"])
+        except AssertionError as msg:
+            print(msg)
+            raise
+        return content_object
+ 
+
+# A class for reading Markdown files containing YAML-specified content classes
 class MarkDownFile:
     def __init__(self, filename):
         """
@@ -243,6 +449,7 @@ class MarkDownFile:
             assert extension == ".md", f"Error: file {filename} lacks a .md extension!"
         except AssertionError as msg:
             print(msg)
+            raise
         
         # read the markdown file contents
         self.read()
@@ -255,49 +462,93 @@ class MarkDownFile:
 
     def read(self):
         """
-        open the filename specified and read data
-        allowing for YAML definitions delimited by a
-        #yaml pragma in a code block like so:
+        Open the file and read GitHub-Flavored Markdown,
+        allowing for YAML-formatted Python object declarations.
         
-        ```#yaml
-        [yaml definitions here]
-        ```
+        Declare Python objects by decorating a code block:
+        
+        ```[Class Name](
+        args:
+          - arg1
+          - arg2
+          [...]
+        kwargs:
+          kw1: kw_value_1
+          kw2: kw_value_2
+          [...]
+        ```)
         
         Note this is distinct from a code block we consider
-        simply part of the markdown like so:
+        simply part of the GitHub Markdown specification like so:
         
-        ```yaml
-        [example yaml syntax here]
+        ```
+        [Class Name](*args, **kwargs)
         ```
         
-        In the second case, because we do not find the pragma,
-        we do not interpret the code block to contain
-        YAML definitions for the preprocessor.
+        In the second case, because we do not find a code block decoration,
+        we simply interpret the code block as part of its surrounding markdown.
         """
-
-        reading_yaml = False
-
-        # Types of content blocks we read: "text", "figure"
-        tmp_read_type = "text"
-        tmp_string = ""
-
-        def store_tmp_block():
-            if tmp_read_type == "text":
-                self.content.append(Text(tmp_string, self.location))
-            elif tmp_read_type == "figure":
-                self.content.append(Figure(tmp_string, self.location))
         
-        file = open(self.location.relpath, "r")
-        for line in file:
-            if not reading_yaml and line.strip() == "```#yamlFigure":
-                reading_yaml = True
-                store_tmp_block()
-            elif reading_yaml and line.strip() == "```":
-                reading_yaml = False
-                store_tmp_block()
-            else:
-                tmp_string += line
-        file.close()
+        # Keep track of the current reader state
+        state = ReaderState()
+        
+        # Helper function to construct content as we
+        # encounter individual content blocks in the file.
+        def construct_content_and_reset():
+            # store content only if we have read any content
+            if state.has_content():
+                self.content.append(state.construct_content_object(location=self.location))
+
+            # in any case, reset the reader state
+            state.reset()
+ 
+        # Read content from our file
+        with open(self.location.relpath, "r") as file:
+            # Loop through the lines in the file, reading content
+            for linenumber, line in enumerate(file, start=1):
+                # To make this easy, let's move to lowercase and eliminate all whitespace
+                lowercase_nospaces = re.sub(r"\s", r"", line.lower()) 
+                print(f"lcns: {lowercase_nospaces}")
+
+                # If we are not reading an object declaration,
+                # check if we are entering an object declaration.
+                if not state.is_declaration() and lowercase_nospaces.startswith(r"```"):
+                    # Distinguish a YAML-formatted object declaration
+                    # from a ```-delimited code block
+                    #
+                    # The strategy for all classes in each line is to
+                    # collapse all whitespace and convert to lowercase then
+                    # check for all known content class names.
+                    #
+                    # Figure class:
+                    code_block_entry = lowercase_nospaces
+                    if code_block_entry == r"```figure(":
+                        construct_content_and_reset()
+                        state.set_declaration()
+                        state.set_class_label("Figure")
+                    elif code_block_entry == r"```text(":
+                        construct_content_and_reset()
+                        state.set_declaration()
+                        state.set_class_label("Text")
+                    elif code_block_entry != r"```":
+                        try:
+                            assert(False), f"Error: read unknown content class declaration {code_block_entry} on line {linenumber} of file {self.location.abspath}"
+                        except AssertionError as msg:
+                            print(msg)
+                            raise
+                # If we are reading an object declaration,
+                # check if we are exiting the object declaration.
+                elif lowercase_nospaces == r"```)":
+                    construct_content_and_reset()
+                    state.set_not_declaration()
+                    state.set_class_label("Text")
+                # If we are neither entering nor exiting a YAML block,
+                # simply store the current line in the reader state.
+                else:
+                    state.store_content(line)
+
+            # After looping through the file, construct any remaining content in our reader state.
+            construct_content_and_reset()
 
 
 # Define a Scene, the smallest complete composition frame.
@@ -468,16 +719,16 @@ class Webpage:
             assert len(common_keys) == 0, f"Error: content YAML shadows one or more configuration settings!\nCheck common keys: {common_keys}"
         except AssertionError as msg:
             print(msg)
+            raise
 
         # Form the data to feed into the template rendering
-        render_data = config_data | content_data
+        render_data = {**config_data, **content_data}
 
         # Load template file specified
         j2env = Environment(loader=FileSystemLoader(os.path.dirname(html_template)), undefined=DebugUndefined)
         j2tmp = j2env.get_template(os.path.basename(html_template))
 
         # Use Jinja2 to render the template and create output HTML data
-        render_data = config_data | content_data
         html_out = j2tmp.render(render_data)
 
         # Write output HTML data to an HTML file
@@ -501,7 +752,7 @@ class ReaderYAML:
         """
         data = {}
         with open(yaml_abs_path, "r") as file:
-            data = data | yaml.safe_load(file)
+            data = {**data, **yaml.safe_load(file)}
         return data
 
 
@@ -519,7 +770,7 @@ class ReaderYAML:
 
         # Loop through Configuration files and Read YAML
         for f in data_files:
-            data = data | self.read(f)
+            data = {**data, **self.read(f)}
 
         # Return Dictionary of YAML Data
         return data
