@@ -41,7 +41,7 @@ class Location:
         path between the Sequence location and the source file
         specifying the Scene.
 
-        The location of a Text or Figure element is the same as the 
+        The location of a Text or Figure element is the same as the
         location of the source file where the text or figure
         specification appears.
 
@@ -245,7 +245,7 @@ class ContentFactory:
             except AssertionError as msg:
                 print(msg)
                 raise
-        
+
     ## Define a helper function to get the list of
     ## keyword arguments supported by a class
     def get_supported_keywords(self, a_class):
@@ -263,7 +263,7 @@ class ContentFactory:
         except AssertionError as msg:
             print(msg)
             raise
-        
+
         # Verbose: print the class and arguments we are about to use
         print("In ContentFactory.construct(), we are attempting the following:")
         print(f"  class: {cls.__name__}")
@@ -273,10 +273,10 @@ class ContentFactory:
         print(f"  kwargs:")
         for k,v in kwargs.items():
             print(f"       {k}: {v}")
-        
+
         # Construct class with the given arguments
         xobj = cls(*args, **kwargs)
-        
+
         ## Return the newly-constructed object to the caller
         return xobj
 
@@ -306,7 +306,7 @@ class ReaderState:
         self.m_class_label = None
         self.m_class_map = None
         self.m_class_factory = None
-        
+
         # initialize state
         self.reset()
 
@@ -319,16 +319,16 @@ class ReaderState:
     def set_not_declaration(self):
         # set the "reading a declaration" state to False
         self.m_declaration = False
-        
+
     def set_declaration(self):
         # set the "reading a declaration" state to True
         self.m_declaration = True
-        
+
     def is_declaration(self):
         # return True if we are "reading a declaration",
         # otherwise return False.
         return self.m_declaration
-    
+
     def set_class_label(self, class_label):
         # raise an error if we do not recognize the label
         # otherwise set the class label for our reader content
@@ -338,12 +338,12 @@ class ReaderState:
         except AssertionError as msg:
             print(msg)
             raise
-        
+
     def clear_content(self):
         # clears stored content
         self.m_content = ""
         self.m_class_label = Text.__name__
-        
+
     def define_classes(self):
         # Types of content blocks we recognize
         # and their mappings to class constructors
@@ -355,11 +355,11 @@ class ReaderState:
     def store_content(self, new_content):
         # stores new content
         self.m_content += new_content
-        
+
     def content(self):
         # returns reader content
         return self.m_content
-        
+
     def is_empty(self):
         # check if content is null,
         # i.e. equivalent to the empty string or None
@@ -367,7 +367,7 @@ class ReaderState:
         none_type = None
         null_similarity = lambda a,b: (a is b) or (bool(a) is bool(b)) or (a==b)
         return null_similarity(self.m_content, empty_string) or null_similarity(self.m_content, none_type)
-    
+
     def has_content(self):
         # return True if we have content, False otherwise
         return not self.is_empty()
@@ -410,17 +410,17 @@ class ReaderState:
                     # so we interpret all other entries as "key: value" keyword arguments
                     if k != "args" and k != "kwargs":
                         cls_args["kwargs"][k] = v
-                        
+
                 # finally, add the kwargs from this function caller
                 cls_args["kwargs"] = {**cls_args["kwargs"], **kwargs}
-                
+
             print(f"cls_args: {cls_args}")
             content_object = self.m_class_factory.construct(self.m_class_map[self.m_class_label], *cls_args["args"], **cls_args["kwargs"])
         except AssertionError as msg:
             print(msg)
             raise
         return content_object
- 
+
 
 # A class for reading Markdown files containing YAML-specified content classes
 class MarkDownFile:
@@ -429,7 +429,7 @@ class MarkDownFile:
         Initialize class data from filename.
 
         Filename is an absolute path.
-        
+
         Each Markdown file contains GitHub-flavored markdown text interspersed with YAML-defined figures.
 
         This class transforms such a file into a list of dictionaries.
@@ -437,7 +437,7 @@ class MarkDownFile:
         Each dictionary represents either text or figure content.
         """
         self.content = []
-        
+
         # get the file's basename (no directories)
         self.basename = os.path.basename(filename)
         # store the file's location
@@ -450,7 +450,7 @@ class MarkDownFile:
         except AssertionError as msg:
             print(msg)
             raise
-        
+
         # read the markdown file contents
         self.read()
 
@@ -464,9 +464,9 @@ class MarkDownFile:
         """
         Open the file and read GitHub-Flavored Markdown,
         allowing for YAML-formatted Python object declarations.
-        
+
         Declare Python objects by decorating a code block:
-        
+
         ```[Class Name](
         args:
           - arg1
@@ -477,21 +477,21 @@ class MarkDownFile:
           kw2: kw_value_2
           [...]
         ```)
-        
+
         Note this is distinct from a code block we consider
         simply part of the GitHub Markdown specification like so:
-        
+
         ```
         [Class Name](*args, **kwargs)
         ```
-        
+
         In the second case, because we do not find a code block decoration,
         we simply interpret the code block as part of its surrounding markdown.
         """
-        
+
         # Keep track of the current reader state
         state = ReaderState()
-        
+
         # Helper function to construct content as we
         # encounter individual content blocks in the file.
         def construct_content_and_reset():
@@ -501,13 +501,13 @@ class MarkDownFile:
 
             # in any case, reset the reader state
             state.reset()
- 
+
         # Read content from our file
         with open(self.location.relpath, "r") as file:
             # Loop through the lines in the file, reading content
             for linenumber, line in enumerate(file, start=1):
                 # To make this easy, let's move to lowercase and eliminate all whitespace
-                lowercase_nospaces = re.sub(r"\s", r"", line.lower()) 
+                lowercase_nospaces = re.sub(r"\s", r"", line.lower())
                 print(f"lcns: {lowercase_nospaces}")
 
                 # If we are not reading an object declaration,
@@ -619,7 +619,7 @@ class Sequence:
 
         sequence.author = sequence_dict["author"]
         sequence.title = sequence_dict["title"]
-        sequence.pointer = pointer 
+        sequence.pointer = pointer
         sequence.sequence = [Scene(s, pointer) for s in sequence_dict["sequence"]]
 
         return sequence
@@ -644,7 +644,7 @@ class Sequence:
 
         dictout = {"author": self.author, "title": self.title}
         dictout["sequence"] = [s.render_dict(target) for s in self.sequence]
-        
+
         return dictout
 
 
@@ -700,7 +700,7 @@ class Webpage:
         Relies on inputs:
         - html_template: path to a Jinja2-templated HTML file
                         (will replace .j2 extension with .html)
-        - config_data: Python dictionary storing configuration settings 
+        - config_data: Python dictionary storing configuration settings
         - content_data: Python dictionary storing YAML-formatted content files
         """
 
