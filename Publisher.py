@@ -6,19 +6,123 @@ The Publisher code is a collection of Python classes to make
 publishing markdown content easy using a combination of
 GitHub-Flavored Markdown and YAML-defined objects.
 
-Currently it supports a webpage output, but it would be easy to
+Currently it supports a webpage output, but it would be "easy" to
 generate LaTeX documents, Beamer slides, etc.
 
 D. Willcox
 """
 
 import inspect
+import copy
 import os
 import re
 import glob
 import yaml
 import markdown
 from jinja2 import Environment, FileSystemLoader, Template, DebugUndefined
+
+
+# Define some generic data container classes
+
+# A Dataset is a combination of list and dictionary data.
+#
+# Dataset metadata may be stored in the dictionary,
+# while dataset entries are storied in the list, etc.
+#
+# An entry may be an Entry object or a complex data structure.
+class Dataset:
+    def __init__(self, *args, **kwargs):
+        self.m_list = list(copy.deepcopy(args))
+        self.m_dict = dict(copy.deepcopy(kwargs))
+
+    def __iter__(self):
+        return iter(self.m_list)
+
+    def archive_entry(self, entry):
+        self.m_list.append(copy.deepcopy(entry))
+
+    def archive_attribute(self, key, value):
+        try:
+            assert(key is not "__type__"), f"Error: __type__ is a reserved keyword for this class."
+            self.m_dict[key] = copy.deepcopy(value)
+        except AssertionError as msg:
+            print(msg)
+            raise
+
+    def get(self, idx):
+        try:
+            if isinstance(idx, int):
+                return self.m_list[idx]
+            elif isinstance(idx, str):
+                return self.m_dict[idx]
+            assert(False), f"Error: index must be either int or str type."
+        except AssertionError as msg:
+            print(msg)
+            raise
+
+    def entries(self):
+        return self.m_list
+
+    def attributes(self):
+        return self.m_dict
+
+    def has_entries(self):
+        return len(self.m_list) > 0
+
+    def has_attributes(self):
+        return len(self.m_dict.keys()) > 0
+
+    def has_content(self):
+        return self.has_entries() or self.has_attributes()
+
+    def render_dict(self, **kwargs):
+        # This is a recursive function
+        #
+        # Recurse through the entries in order, returning
+        # dictionaries of {"context": [container type name, e.g. ParallelSet or SerialSet],
+        #                  "class": [self type name],
+        #                  "attributes": [dictionary of self.attributes()],
+        #                  "entries": list of entries}
+        data = {}
+        data["context"] = kwargs["context"]
+        data["class"] = type(self).__name__
+        data["attributes"] = self.m_dict
+        data["entries"] = [entry.render_dict(**{**kwargs, **{"context": type(self).__name__}}) for entry in self.entries()]
+        return data
+
+# A ParallelSet is typically a time-parallel set of entries.
+#
+# They are meant to be evaluated in parallel.
+class ParallelSet(Dataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.m_dict["__type__"] = type(self).__name__
+
+
+# A SerialSet is typically a time-ordered set of entries.
+#
+# They are meant to be evaluated in serial.
+#
+# This could be a set of datasets, or it could be a set of content objects.
+#
+# If it is the latter case, then it is helpful to think of the SerialSet as an Entry.
+#
+# The Entry is title + related content.
+#
+# An Entry could be untitled plain text.
+#
+# An Entry could be a heading plus plain text.
+#
+# An Entry could be a heading with text and one or more figures.
+#
+# Whatever the case, these are meant to focus on one precise topic.
+#
+# A Scene may need only one Entry, or it may require multiple entries
+# to communicate an idea relating multiple precise topics.
+class SerialSet(Dataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.m_dict["__type__"] = type(self).__name__
 
 
 # Define content classes for each type
@@ -111,6 +215,31 @@ class Location:
         return Location(abspath)
 
 
+class Yaml(Dataset):
+    def __init__(self, *args, **kwargs):
+        """
+        This class contains YAML-formatted data.
+
+        Supports either list or dictionary data.
+        """
+        super().__init__(*args, **kwargs)
+
+    def render_dict(self, **kwargs):
+        # This is a recursive function
+        #
+        # Recurse through the entries in order, returning
+        # dictionaries of {"context": [container type name, e.g. ParallelSet or SerialSet],
+        #                  "class": [self type name],
+        #                  "attributes": [dictionary of self.attributes()],
+        #                  "entries": list of entries}
+        data = {}
+        data["context"] = kwargs["context"]
+        data["class"] = type(self).__name__
+        data["attributes"] = self.m_dict
+        data["entries"] = [e for e in self.entries()]
+        return data
+
+
 class Text:
     def __init__(self, content_string, location=Location()):
         """
@@ -148,7 +277,7 @@ class Text:
 
         return html
 
-    def render_dict(self, target=None):
+    def render_dict(self, target=None, **kwargs):
         """
         Returns a dictionary containing all Text content.
 
@@ -158,20 +287,24 @@ class Text:
         This is useful for rendering using Jinja2.
         """
 
-        dictout = {"type": "Text"}
+        data = {}
+        data["context"] = kwargs["context"]
+        data["class"] = type(self).__name__
+        data["attributes"] = {"content": ""}
+        data["entries"] = []
 
         try:
             if (not target) or (target == "markdown"):
-                dictout["content"] = self.raw_string
+                data["attributes"]["content"] = self.raw_string
             elif target == "html":
-                dictout["content"] = self.as_html()
+                data["attributes"]["content"] = self.as_html()
             else:
                 assert(not target), f"Error: unrecognized target {target}"
         except AssertionError as msg:
             print(msg)
             raise
 
-        return dictout
+        return data
 
 
 class Figure:
@@ -213,21 +346,24 @@ class Figure:
         self.relpath = source_location.relpath
         self.abspath = source_location.abspath
 
-    def render_dict(self, target=None):
+    def render_dict(self, **kwargs):
         """
         Returns a dictionary containing all Figure content.
 
         This is useful for rendering using Jinja2.
         """
 
-        dictout = {"type": "Figure",
-                   "source": self.source,
-                   "relpath": self.relpath,
-                   "abspath": self.abspath,
-                   "title": self.title,
-                   "caption": self.caption}
+        data = {}
+        data["context"] = kwargs["context"]
+        data["class"] = type(self).__name__
+        data["attributes"] = {"source": self.source,
+                              "relpath": self.relpath,
+                              "abspath": self.abspath,
+                              "title": self.title,
+                              "caption": self.caption}
+        data["entries"] = []
 
-        return dictout
+        return data
 
 
 # This is a factory class for constructing
@@ -273,6 +409,11 @@ class ContentFactory:
         print(f"  kwargs:")
         for k,v in kwargs.items():
             print(f"       {k}: {v}")
+
+        # Classes do not expect their classname in the keyword list.
+        #
+        # We just need it to pick which class to construct.
+        kwargs.pop("class", None)
 
         # Construct class with the given arguments
         xobj = cls(*args, **kwargs)
@@ -329,25 +470,44 @@ class ReaderState:
         # otherwise return False.
         return self.m_declaration
 
-    def set_class_label(self, class_label):
-        # raise an error if we do not recognize the label
-        # otherwise set the class label for our reader content
-        try:
-            assert(class_label in self.m_class_map.keys()), f"Error: cannot identify unknown content class: {class_label}"
-            self.m_class_label = class_label
-        except AssertionError as msg:
-            print(msg)
-            raise
+    def set_class_label(self, class_label="__auto__"):
+        # if auto, then try to figure out the label ourselves
+        if class_label=="__auto__":
+            try:
+                assert(self.has_content()), f"Error: cannot auto-identify a class label without content."
+                data = yaml.safe_load(self.m_content)
+                if isinstance(data, dict):
+                    if "class" in data.keys():
+                        self.m_class_label = self.m_class_map[data["class"]].__name__
+                    else:
+                        self.m_class_label = Yaml.__name__
+                elif isinstance(data, list):
+                    self.m_class_label = Yaml.__name__
+                else:
+                    self.m_class_label = Text.__name__
+            except AssertionError as msg:
+                print(msg)
+                raise
+        else:
+            # else, raise an error if we do not recognize the label
+            # otherwise, set the class label for our reader content
+            try:
+                assert(class_label in self.m_class_map.keys()), f"Error: cannot identify unknown content class: {class_label}"
+                self.m_class_label = class_label
+            except AssertionError as msg:
+                print(msg)
+                raise
 
     def clear_content(self):
         # clears stored content
         self.m_content = ""
-        self.m_class_label = Text.__name__
+        self.m_class_label = None
 
     def define_classes(self):
         # Types of content blocks we recognize
         # and their mappings to class constructors
         self.m_class_map = {Text.__name__: Text,
+                            Yaml.__name__: Yaml,
                             Figure.__name__: Figure}
 
         self.m_class_factory = ContentFactory(*[cls for _,cls in self.m_class_map.items()])
@@ -365,12 +525,22 @@ class ReaderState:
         # i.e. equivalent to the empty string or None
         empty_string = ""
         none_type = None
+
         null_similarity = lambda a,b: (a is b) or (bool(a) is bool(b)) or (a==b)
-        return null_similarity(self.m_content, empty_string) or null_similarity(self.m_content, none_type)
+
+        if null_similarity(self.m_content, none_type):
+            return True
+        else:
+            return null_similarity(self.m_content.strip(), empty_string)
 
     def has_content(self):
         # return True if we have content, False otherwise
         return not self.is_empty()
+
+    def content_to_dict(self):
+        # interprets the content as YAML and return a dictionary of the results
+        content_dict = yaml.safe_load(self.m_content)
+        return content_dict
 
     def construct_content_object(self, **kwargs):
         # call the class constructor for our reader content and
@@ -391,7 +561,7 @@ class ReaderState:
             else:
                 # convert yaml-specified arguments into positional and
                 # keyword arguments for class construction
-                yaml_args = yaml.safe_load(self.m_content)
+                yaml_args = self.content_to_dict()
 
                 print(f"yaml_args: {yaml_args}")
 
@@ -432,11 +602,21 @@ class MarkDownFile:
 
         Each Markdown file contains GitHub-flavored markdown text interspersed with YAML-defined figures.
 
-        This class transforms such a file into a list of dictionaries.
+        The Markdown file represents the content for a single Scene as a set of one or more Datasets.
 
-        Each dictionary represents either text or figure content.
+        Each Dataset stores one or more Datasets, each containing a set of Entries.
+
+        Each Entry is itself a set of Content Objects
+
+        This hierarchy enables Scenes to have sections with subsections.
+
+        Further subdivision is not very useful because a Scene usually represents two-dimensional visual data
+        laid out vertically first, with each entry along a column possibly
+        extending horizontally in a row of Entries.
+
+        This class thus transforms a file into a hierarchy of Entries, each a list of Content Objects.
         """
-        self.content = []
+        self.content = SerialSet()
 
         # get the file's basename (no directories)
         self.basename = os.path.basename(filename)
@@ -451,12 +631,15 @@ class MarkDownFile:
             print(msg)
             raise
 
+        # Store the filename (no extension) as the top level dataset name
+        self.content.archive_attribute("name", self.name)
+
         # read the markdown file contents
         self.read()
 
     def get_content(self):
         """
-        Returns the list of content objects in the file
+        Returns the dataset of entries in the file
         """
         return self.content
 
@@ -467,7 +650,8 @@ class MarkDownFile:
 
         Declare Python objects by decorating a code block:
 
-        ```[Class Name](
+        ```yaml
+        class: [Class Name]
         args:
           - arg1
           - arg2
@@ -476,7 +660,16 @@ class MarkDownFile:
           kw1: kw_value_1
           kw2: kw_value_2
           [...]
-        ```)
+        ```
+
+        Alternately, you can use only keyword arguments like so:
+
+        ```yaml
+        class: [Class Name]
+        kw1: kw_value_1
+        kw2: kw_value_2
+        [...]
+        ```
 
         Note this is distinct from a code block we consider
         simply part of the GitHub Markdown specification like so:
@@ -485,22 +678,114 @@ class MarkDownFile:
         [Class Name](*args, **kwargs)
         ```
 
-        In the second case, because we do not find a code block decoration,
-        we simply interpret the code block as part of its surrounding markdown.
+        In the second case, because we do not find both a "yaml" decoration
+        and a class keyword entry, we do not map the yaml block to a class.
+
+        We simply interpret the code block as part of its surrounding markdown.
+
+        If the "class" keyword is omitted but the code block is decorated
+        with a yaml declaration, then the code block contents are interpreted
+        as yaml-formatted data and added to the global file metadata.
+
+        For example, this could be the top of the file:
+
+        ```yaml
+        title: Scene Title
+        subtitle: Scene Subtitle
+        ```
+
+        And we will read the YAML data into the Scene global Dataset attributes.
+
+        Here is the algorithm for creating a content hierarchy that
+        supports one level of markdown headings denoted by "#" as well
+        as YAML sequences specifying global attributes or content objects.
+
+        We want to fill the global SerialSet.
+
+        We start out reading content objects into a temporary SerialSet.
+
+        def helper(finish_serial=False):
+            store the current reader state in the temporary SerialSet
+
+            if finish_serial:
+                if a temporary ParallelSet does not exist:
+                    save the temporary SerialSet, if it is not empty, into the global SerialSet
+                else:
+                    save the temporary SerialSet, it if is not empty, into the ParallelSet
+
+                create a new temporary SerialSet
+
+        if we find a YAML sequence:
+            read the YAML sequence into a content raw string
+
+            convert it to a dict through the YAML interpreter
+
+            if that dict has no class key:
+                store the dict's (key,value) map in the global SerialSet attributes.
+            else:
+                convert the dict to a content object
+                append it to the temporary SerialSet list by calling helper(finish_serial=False)
+
+        if we are reading a text sequence:
+            if we encounter a heading marker "#" or a line consisting of at least 3 dashes "---":
+                helper(finish_serial=True)
+
+                if heading:
+                    name the new temporary SerialSet using the heading name
+                    create a new temporary ParallelSet if it does not exist
+
+                elif dashes:
+                    save the ParallelSet, if it is not empty, as a new entry into the global SerialSet
+                    set the ParallelSet to None
+
+            else:
+                use the temporary SerialSet to resume reading content objects
+
+        when we encounter end-of-file:
+            helper(finish_serial=True)
+
+            if a temporary ParallelSet exists:
+                save the ParallelSet, if it is not empty, as a new entry into the global SerialSet
         """
 
         # Keep track of the current reader state
         state = ReaderState()
 
+        # Temporary variables for building the content hierarchy
+        tmp_serial_set = SerialSet()
+        tmp_parallel_set = None
+
         # Helper function to construct content as we
         # encounter individual content blocks in the file.
-        def construct_content_and_reset():
+        def construct_content_and_reset(_serial_set, _parallel_set, _state, finish_serial=False):
             # store content only if we have read any content
-            if state.has_content():
-                self.content.append(state.construct_content_object(location=self.location))
+            if _state.has_content():
+                # automatically figure out the content class
+                _state.set_class_label()
+
+                # create content object from reader state
+                xobj = _state.construct_content_object(location=self.location)
+
+                # store content object in temporary SerialSet
+                _serial_set.archive_entry(xobj)
+
+            # if we need to finish serial content accumulation, then
+            # check if ParallelSet exists and store temporary SerialSet
+            if finish_serial:
+                if _serial_set.has_content():
+                    if _parallel_set is None:
+                        self.content.archive_entry(_serial_set)
+                    else:
+                        _parallel_set.archive_entry(_serial_set)
+
+                # create a new temporary SerialSet
+                _serial_set = SerialSet()
 
             # in any case, reset the reader state
-            state.reset()
+            _state.reset()
+
+            # return tuple of positional args
+            return (_serial_set, _parallel_set, _state)
 
         # Read content from our file
         with open(self.location.relpath, "r") as file:
@@ -510,45 +795,83 @@ class MarkDownFile:
                 lowercase_nospaces = re.sub(r"\s", r"", line.lower())
                 print(f"lcns: {lowercase_nospaces}")
 
-                # If we are not reading an object declaration,
-                # check if we are entering an object declaration.
                 if not state.is_declaration() and lowercase_nospaces.startswith(r"```"):
+                    # If we are not reading a YAML declaration,
+                    # check if we are entering a YAML declaration.
+                    #
                     # Distinguish a YAML-formatted object declaration
                     # from a ```-delimited code block
-                    #
-                    # The strategy for all classes in each line is to
-                    # collapse all whitespace and convert to lowercase then
-                    # check for all known content class names.
-                    #
-                    # Figure class:
-                    code_block_entry = lowercase_nospaces
-                    if code_block_entry == r"```figure(":
-                        construct_content_and_reset()
+                    if lowercase_nospaces == r"```yaml":
+                        tmp_serial_set, tmp_parallel_set, state = construct_content_and_reset(tmp_serial_set,
+                                                                                              tmp_parallel_set,
+                                                                                              state,
+                                                                                              finish_serial=False)
                         state.set_declaration()
-                        state.set_class_label("Figure")
-                    elif code_block_entry == r"```text(":
-                        construct_content_and_reset()
-                        state.set_declaration()
-                        state.set_class_label("Text")
-                    elif code_block_entry != r"```":
+                    elif lowercase_nospaces != r"```":
                         try:
-                            assert(False), f"Error: read unknown content class declaration {code_block_entry} on line {linenumber} of file {self.location.abspath}"
+                            assert(False), f"Error: read unknown content declaration {lowercase_nospaces} on line {linenumber} of file {self.location.abspath}"
                         except AssertionError as msg:
                             print(msg)
                             raise
-                # If we are reading an object declaration,
-                # check if we are exiting the object declaration.
-                elif lowercase_nospaces == r"```)":
-                    construct_content_and_reset()
+                elif lowercase_nospaces == r"```":
+                    # If we are reading a YAML declaration,
+                    # check if we are exiting the YAML declaration.
+                    tmp_serial_set, tmp_parallel_set, state = construct_content_and_reset(tmp_serial_set,
+                                                                                          tmp_parallel_set,
+                                                                                          state,
+                                                                                          finish_serial=False)
                     state.set_not_declaration()
-                    state.set_class_label("Text")
-                # If we are neither entering nor exiting a YAML block,
-                # simply store the current line in the reader state.
                 else:
-                    state.store_content(line)
+                    # We are neither entering nor exiting a YAML block.
+                    if state.is_declaration():
+                        # If we are currently reading a YAML block,
+                        # store the current line in the reader state.
+                        state.store_content(line)
+                    else:
+                        # Otherwise we are currently reading Markup text.
 
-            # After looping through the file, construct any remaining content in our reader state.
-            construct_content_and_reset()
+                        # Check if we encountered a heading marker: "#"
+                        at_heading = lowercase_nospaces.startswith(r"#")
+
+                        # Check if we encountered a line with nothing but 1 or more dashes: "-" (possibly repeated)
+                        at_dashes = lowercase_nospaces != "" and re.sub(r"-", r"", lowercase_nospaces) == ""
+
+                        if at_heading or at_dashes:
+                            # if we are at a heading or at dashes, then
+                            # organize our content into serial or parallel sets
+                            tmp_serial_set, tmp_parallel_set, state = construct_content_and_reset(tmp_serial_set,
+                                                                                                  tmp_parallel_set,
+                                                                                                  state,
+                                                                                                  finish_serial=True)
+
+                            if at_heading:
+                                if tmp_parallel_set is None:
+                                    tmp_parallel_set = ParallelSet()
+                                heading_text = lowercase_nospaces.lstrip(r"#")
+                                tmp_serial_set.archive_attribute("name", heading_text)
+                            elif at_dashes:
+                                if tmp_parallel_set.has_content():
+                                    self.content.archive_entry(tmp_parallel_set)
+                                tmp_parallel_set = None
+                        else:
+                            # we are neither at a heading nor at dashes so
+                            # we must be at ordinary markup text and we can
+                            # store the current line into the reader state
+                            state.store_content(line)
+
+            # After looping through the file,
+            # construct any remaining content in our reader state.
+            #
+            # Also store our serial or parallel sets into the global dataset.
+            tmp_serial_set, tmp_parallel_set, state = construct_content_and_reset(tmp_serial_set,
+                                                                                  tmp_parallel_set,
+                                                                                  state,
+                                                                                  finish_serial=True)
+            #
+            if tmp_parallel_set is not None:
+                if tmp_parallel_set.has_content():
+                    self.content.archive_entry(tmp_parallel_set)
+                tmp_parallel_set = None
 
 
 # Define a Scene, the smallest complete composition frame.
@@ -577,7 +900,7 @@ class Scene:
         source_loc = self.pointer.locate_relpath(self.source)
         self.content = MarkDownFile(source_loc.relpath).get_content()
 
-    def render_dict(self, target=None):
+    def render_dict(self, **kwargs):
         """
         Returns a dictionary containing all Scene content.
 
@@ -585,9 +908,27 @@ class Scene:
         """
 
         dictout = {"glance": self.glance, "source": self.source}
-        dictout["content"] = [c.render_dict(target) for c in self.content]
+
+        # add any attributes from our content dictionary
+        try:
+            for k,v in self.content.attributes().items():
+                assert k not in dictout.keys(), f"Error: content attribute {k} shadows dictionary keys!"
+                dictout[k] = v
+        except AssertionError as msg:
+            print(msg)
+            raise
+
+        # transform content entries into the dictionary key "content"
+        try:
+            assert "content" not in dictout.keys(), f"Error: attribute 'content' shadows reserved key!"
+        except AssertionError as msg:
+            print(msg)
+            raise
+
+        dictout["content"] = self.content.render_dict(**{**kwargs, **{"context": type(self.content).__name__}})
 
         return dictout
+
 
 
 # Define a Sequence containing an ordered set of Scenes.
@@ -635,7 +976,7 @@ class Sequence:
 
         return cls.from_dict(sequence_spec, pointer=sequence_spec_loc)
 
-    def render_dict(self, target=None):
+    def render_dict(self, **kwargs):
         """
         Returns a dictionary containing all Sequence content.
 
@@ -643,7 +984,7 @@ class Sequence:
         """
 
         dictout = {"author": self.author, "title": self.title}
-        dictout["sequence"] = [s.render_dict(target) for s in self.sequence]
+        dictout["sequence"] = [s.render_dict(**kwargs) for s in self.sequence]
 
         return dictout
 
@@ -710,7 +1051,7 @@ class Webpage:
             print("Warning: rendering a website without configuration may leave some template settings unmatched.")
         config_data = self.config
 
-        content_data = self.sequence.render_dict()
+        content_data = self.sequence.render_dict(target="html")
 
         # First, let's sanity-check that the content contains no conflicting
         # dictionary keys with the configuration and assert an error otherwise
