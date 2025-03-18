@@ -181,10 +181,10 @@ class Location:
                 # compute the absolute and relative paths to the file
                 if os.path.isabs(path):
                     self.abspath = path
-                    self.relpath = os.path.relpath(path, start=cwd)
+                    self.relpath = os.path.relpath(path, start=self.cwd)
                 else:
-                    self.relpath = os.path.relpath(path, start=cwd)
-                    self.abspath = os.path.join(cwd, self.relpath)
+                    self.relpath = os.path.relpath(path, start=self.cwd)
+                    self.abspath = os.path.join(self.cwd, self.relpath)
 
                 # raise an error if this location does not specify a file
                 assert(os.path.isfile(self.abspath)), f"Error: no file found at path {path}"
@@ -403,16 +403,6 @@ class ContentFactory:
             print(msg)
             raise
 
-        # Verbose: print the class and arguments we are about to use
-        print("In ContentFactory.construct(), we are attempting the following:")
-        print(f"  class: {cls.__name__}")
-        print(f"  args:")
-        for a in args:
-            print(f"       {a}")
-        print(f"  kwargs:")
-        for k,v in kwargs.items():
-            print(f"       {k}: {v}")
-
         # Classes do not expect their classname in the keyword list.
         #
         # We just need it to pick which class to construct.
@@ -566,8 +556,6 @@ class ReaderState:
                 # keyword arguments for class construction
                 yaml_args = self.content_to_dict()
 
-                print(f"yaml_args: {yaml_args}")
-
                 # allow user to specify an args list explicitly
                 if "args" in yaml_args.keys():
                     cls_args["args"] = yaml_args["args"][:]
@@ -587,7 +575,6 @@ class ReaderState:
                 # finally, add the kwargs from this function caller
                 cls_args["kwargs"] = {**cls_args["kwargs"], **kwargs}
 
-            print(f"cls_args: {cls_args}")
             content_object = self.m_class_factory.construct(self.m_class_map[self.m_class_label], *cls_args["args"], **cls_args["kwargs"])
         except AssertionError as msg:
             print(msg)
@@ -806,7 +793,6 @@ class MarkDownFile:
             for linenumber, line in enumerate(file, start=1):
                 # To make this easy, let's move to lowercase and eliminate all whitespace
                 lowercase_nospaces = re.sub(r"\s", r"", line.lower())
-                print(f"lcns: {lowercase_nospaces}")
 
                 if not state.is_declaration() and lowercase_nospaces.startswith(r"```"):
                     # If we are not reading a YAML declaration,
@@ -984,6 +970,7 @@ class Sequence:
         Construct and return a Sequence from a YAML specification in
         the given path.
         """
+        reader = ReaderYAML()
         sequence_spec_loc = Location(path)
         sequence_spec = reader.read(sequence_spec_loc.relpath)
 
@@ -1011,7 +998,7 @@ class Sequence:
 # The Webpage is a single HTML page we wish to render from a Sequence
 #
 class Webpage:
-    def __init__(self):
+    def __init__(self, sequence):
         """
         The Webpage is a class that transforms a Sequence into an HTML page.
         """
