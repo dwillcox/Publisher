@@ -23,6 +23,27 @@ import markdown
 from jinja2 import Environment, FileSystemLoader, Template, DebugUndefined
 
 
+# Define a class for buffering and then writing a log file
+class Log:
+    def __init__(self, logname="_log.json"):
+        self.m_logname = logname
+        self.m_log = ""
+
+    def log(self, data):
+        if isinstance(data, dict):
+            self.m_log += json.dumps(data, indent=4)
+        else:
+            astring = str(data)
+            self.m_log += f"{astring}\n"
+
+    def save(self):
+        if self.m_log == "":
+            return
+        else:
+            with open(self.m_logname,"w") as logfile:
+                logfile.write(self.m_log)
+
+
 # Define some generic data container classes
 
 # A Dataset is a combination of list and dictionary data.
@@ -60,6 +81,22 @@ class Dataset:
             elif isinstance(idx, str):
                 return self.m_dict[idx]
             assert(False), f"Error: index must be either int or str type."
+        except AssertionError as msg:
+            print(msg)
+            raise
+
+    def attribute(self, key):
+        try:
+            assert isinstance(key, str), f"Error: requires string key to lookup attribute, got {key} of type {type(key)}"
+            return self.get(key)
+        except AssertionError as msg:
+            print(msg)
+            raise
+
+    def entry(self, idx):
+        try:
+            assert isinstance(idx, int), f"Error: requires integer index to lookup entry, got {idx} of type {type(idx)}"
+            return self.get(idx)
         except AssertionError as msg:
             print(msg)
             raise
@@ -468,14 +505,17 @@ class ReaderState:
         if class_label=="__auto__":
             try:
                 assert(self.has_content()), f"Error: cannot auto-identify a class label without content."
-                data = yaml.safe_load(self.m_content)
+
+                try:
+                    data = yaml.safe_load(self.m_content)
+                except:
+                    data = self.m_content
+
                 if isinstance(data, dict):
                     if "class" in data.keys():
                         self.m_class_label = self.m_class_map[data["class"]].__name__
                     else:
                         self.m_class_label = Yaml.__name__
-                elif isinstance(data, list):
-                    self.m_class_label = Yaml.__name__
                 else:
                     self.m_class_label = Text.__name__
             except AssertionError as msg:
@@ -883,7 +923,12 @@ class MarkDownFile:
 # Whatever the target, a Scene cannot be further subdivided
 #     without breaking the content flow.
 class Scene:
-    def __init__(self, scene_dict, pointer=Location()):
+    def __init__(self, scene_dict = {}):
+        if scene_dict != {}:
+            self = self.from_dict(scene_dict)
+
+    @classmethod
+    def from_dict(cls, scene_dict, pointer=Location()):
         """
         Initialize Scene from a Python dictionary.
 
@@ -891,13 +936,16 @@ class Scene:
         - scene_dict: Python dictionary storing the following keys:
                       ("glance", "source")
         """
-        self.glance = scene_dict["glance"]
-        self.source = scene_dict["source"]
-        self.pointer = pointer
+        scene = cls()
+        scene.glance = scene_dict["glance"]
+        scene.source = scene_dict["source"]
+        scene.pointer = pointer
 
         # Read the content from the source Markdown file
-        source_loc = self.pointer.locate_relpath(self.source)
-        self.content = MarkDownFile(source_loc.relpath).get_content()
+        source_loc = scene.pointer.locate_relpath(scene.source)
+        scene.content = MarkDownFile(source_loc.relpath).get_content()
+
+        return scene
 
     def render_dict(self, **kwargs):
         """
@@ -917,9 +965,10 @@ class Scene:
             print(msg)
             raise
 
-        # transform content entries into the dictionary key "content"
+        # transform content entries into the dictionary keyed to the class name
+        clsname = type(self).__name__
         try:
-            assert "content" not in dictout.keys(), f"Error: attribute 'content' shadows reserved key!"
+            assert "clsname" not in dictout.keys(), f"Error: attribute {clsname} shadows reserved key!"
         except AssertionError as msg:
             print(msg)
             raise
@@ -927,7 +976,6 @@ class Scene:
         dictout["content"] = self.content.render_dict(**{**kwargs, **{"context": type(self.content).__name__}})
 
         return dictout
-
 
 
 # Define a Sequence containing an ordered set of Scenes.
@@ -939,73 +987,115 @@ class Scene:
 # That is more consistent with the way the code is currently written
 # and strikes me as more easily extensible.
 #
-class Sequence:
-    def __init__(self):
+# Define a Compendium as an ordered set of named Sequences
+#
+# I imagine a Compendium as a volume of manuscripts or a
+# collected set of works all similar in theme or setting.
+#
+# A Compendium could also represent all the content of a professional
+# webpage, with Sequence entries respectively devoted to
+# Research, Software, Outreach, Teaching, etc.
+#
+# Each of these topics are Sequences that could be arranged into
+# multiple Scenes. Think of this as up/down scrollable content,
+# while different Sequences in a Compendium take you to a new webpage.
+#
+# Both the Sequence and Compendium derive directly from SceneSetBase.
+#
+class SceneSetBase(Dataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.content_name = None
         return
-
-    @classmethod
-    def from_dict(cls, sequence_dict, pointer=Location()):
-        """
-        Initialize Sequence of Scene objects from a Python dictionary.
-
-        Requires:
-        - sequence_dict: Python dictionary storing the following keys:
-                         ("author", "title", "sequence")
-                         author: string
-                         title: string
-                         sequence: list of dicts, each to be a Scene
-        """
-        sequence = cls()
-
-        sequence.author = sequence_dict["author"]
-        sequence.title = sequence_dict["title"]
-        sequence.pointer = pointer
-        sequence.sequence = [Scene(s, pointer) for s in sequence_dict["sequence"]]
-
-        return sequence
-
-    @classmethod
-    def from_path(cls, path):
-        """
-        Construct and return a Sequence from a YAML specification in
-        the given path.
-        """
-        reader = ReaderYAML()
-        sequence_spec_loc = Location(path)
-        sequence_spec = reader.read(sequence_spec_loc.relpath)
-
-        return cls.from_dict(sequence_spec, pointer=sequence_spec_loc)
 
     def render_dict(self, **kwargs):
         """
-        Returns a dictionary containing all Sequence content.
+        Returns a dictionary containing all Compendium content.
 
         This is useful for rendering using Jinja2.
         """
 
-        dictout = {"author": self.author, "title": self.title}
-        dictout["sequence"] = [s.render_dict(**kwargs) for s in self.sequence]
+        clsname = type(self).__name__
 
-        with open("render_sequence.json", "w") as file:
-            for idx, scene in enumerate(dictout["sequence"]):
-                file.write(f"// Writing Scene {idx}:\n\n")
-                file.write(json.dumps(scene, indent=4))
-                file.write(f"\n\n\n")
+        dictout = {}
+        for k, v in self.attributes().items():
+            if k not in ["location", "_log", clsname]:
+                dictout[k] = v
+
+        kwrender = {**kwargs, **{"context": type(self).__name__}}
+        dictout[self.content_name] = [s.render_dict(**kwrender) for s in self.attribute(clsname)[self.content_name]]
 
         return dictout
+
+
+class Sequence(SceneSetBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.content_name = "Scenes"
+        return
+
+
+class Compendium(SceneSetBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.content_name = "Sequences"
+        return
+
+
+class SceneSetFactory:
+    def __init__(self, log=None):
+        return
+
+    def from_path(self, path):
+        """
+        Construct and return a Sequence from a YAML specification in
+        the given path.
+        """
+
+        location = Location(path)
+
+        reader = ReaderYAML()
+        _dict = reader.read(location.relpath)
+        _dict["location"] = location
+
+        return self.from_dict(_dict)
+
+    def from_dict(self, _dict):
+        xobj = None
+        if "Compendium" in _dict.keys():
+            _data = []
+            for sequence in _dict["Compendium"]["Sequences"]:
+                _data.append(self.from_dict({"Sequence": sequence, "location": _dict["location"]}))
+
+            _dict["Compendium"]["Sequences"] = _data
+            xobj = Compendium(**_dict)
+        else:
+            try:
+                assert "Sequence" in _dict.keys(), f"Error: could not read Sequence or Compendium from file {location.abspath}"
+            except AssertionError as msg:
+                print(msg)
+                raise
+
+            _data = []
+            for scene in _dict["Sequence"]["Scenes"]:
+                _data.append(Scene.from_dict({"glance": scene["glance"], "source": scene["source"]}, pointer=_dict["location"]))
+
+            _dict["Sequence"]["Scenes"] = _data
+            xobj = Sequence(**_dict)
+        return xobj
 
 
 # The Webpage is a single HTML page we wish to render from a Sequence
 #
 class Webpage:
-    def __init__(self, sequence):
+    def __init__(self, log=None):
         """
         The Webpage is a class that transforms a Sequence into an HTML page.
         """
         self.template = None
-        self.sequence = None
         self.config = {}
-        self.sequence = sequence
+        self.content = None
+        self.log = log
 
     def __enter__(self):
         return self
@@ -1013,11 +1103,16 @@ class Webpage:
     def __exit__(self, type, value, tb):
         return
 
-    def using_sequence(self, sequence):
+    def using_content(self, content):
         """
-        Specify the Sequence the webpage will read from.
+        Specify the Compendium, Sequence, or Scene the webpage will read from.
         """
-        self.sequence = sequence
+        try:
+            assert(isinstance(content, Scene) or isinstance(content, Sequence) or isinstance(content, Compendium)), f"Error: expected either a Sequence or Compendium"
+            self.content = content
+        except AssertionError as msg:
+            print(msg)
+            raise
 
         # Returns self so we can use it in a Python "with" statement.
         return self
@@ -1042,13 +1137,7 @@ class Webpage:
 
     def render_html(self):
         """
-        Uses Jinja2 to render HTML using our template and content.
-
-        Relies on inputs:
-        - html_template: path to a Jinja2-templated HTML file
-                        (will replace .j2 extension with .html)
-        - config_data: Python dictionary storing configuration settings
-        - content_data: Python dictionary storing YAML-formatted content files
+        Uses Jinja2 to render content as HTML using our template and configuration.
         """
 
         html_template = self.template
@@ -1057,13 +1146,15 @@ class Webpage:
             print("Warning: rendering a website without configuration may leave some template settings unmatched.")
         config_data = self.config
 
-        content_data = self.sequence.render_dict(target="html")
+        content_data = self.content.render_dict(target="html")
+        if self.log is not None:
+            self.log.log(content_data)
 
         # First, let's sanity-check that the content contains no conflicting
         # dictionary keys with the configuration and assert an error otherwise
         try:
             common_keys = set(config_data.keys()) & set(content_data.keys())
-            assert len(common_keys) == 0, f"Error: content YAML shadows one or more configuration settings!\nCheck common keys: {common_keys}"
+            assert len(common_keys) == 0, f"Error: content key shadows one or more configuration settings!\nCheck common keys: {common_keys}"
         except AssertionError as msg:
             print(msg)
             raise
@@ -1097,9 +1188,17 @@ class ReaderYAML:
         """
         Get a specific file referenced with an absolute path to a .yaml file.
         """
+
+        basename, extension = os.path.splitext(os.path.basename(yaml_abs_path))
         data = {}
+
         with open(yaml_abs_path, "r") as file:
-            data = {**data, **yaml.safe_load(file)}
+            _yaml_data = yaml.safe_load(file)
+            if type(_yaml_data) != dict:
+                data[basename] = _yaml_data
+            else:
+                data = {**data, **_yaml_data}
+
         return data
 
 
